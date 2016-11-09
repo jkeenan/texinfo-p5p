@@ -1,0 +1,180 @@
+=head1 Suggestions for Working on RT #130010
+
+=over 4
+
+=item 1
+
+Get a tarball of F<texinfo-6.1> from the network and untar it.  Or, clone
+L<https://github.com/jkeenan/texinfo-p5p>. Note the
+top-level directory of the decompressed code.
+
+=item 2
+
+Build and install a version of perl at or after the first bad commit as
+identified by mat's bisection.
+
+See
+L<https://rt.perl.org/Ticket/Attachment/1434422/775884/install_branch_for_testing.sh>
+for an example of a shell script which can facilitate this.  Adjust
+all directories and paths as needed.
+
+Or, if a version of F<install_branch_for_testing.sh> has been placed in this
+repository, use that instead.  Adjust assignment to C<DEBUGGING> to taste.
+
+F<texinfo-6.1> comes with a bundled version of F<Unicode::EastAsianWidth>.  In
+principle, that should suffice for our purposes.  If, however, programs cannot
+locate that module, you may wish to install the module from CPAN against the
+F<perl> executable you just built.  Example:
+
+    bin/cpanm Unicode::EastAsianWidth
+
+=item 3
+
+Open a terminal and establish the following environmental variables.
+
+    export TEXINFODIR=</path/to/texinfo-6.1/from/1/above>
+    export PERL=</path/to/perl/from/2/above>
+
+Example:
+
+    export TEXINFODIR=/home/jkeenan/learn/perl/p5p/texinfo/texinfo-6.1
+    export PERL=/home/jkeenan/testing/a5540cf/bin/perl
+
+=item 4
+
+Build F<texinfo-6.1> and run its test suite.  (You may wish to perform C<make
+check> in a F<typescript> session so that you can later reference the
+individual test processes that failed.)
+
+    cd $TEXINFODIR
+    ./configure
+    make
+    make check
+
+C<./configure> will internally make use of your assignment to C<$PERL> to
+build F<texinfo> against whatever commit or branch you have specified.
+
+=item 5
+
+First diagnostic:  Locate the files where the failure message has been
+recorded.
+
+    ack -A1 'Modification' tp/tests
+
+=item 6
+
+Second diagnostic:  Run one of the failing instances through the C<$PERL>
+debugger (optionally, in a F<typescript> session).  Example:
+
+    cd $TEXINFODIR/tp/tests
+    $PERL -w -d ../texi2any.pl \
+        --set-customization-variable=TEXI2HTML  \
+        --force  \
+        --conf-dir ./../t/init/  \
+        --conf-dir ./../init -I formatting// -I ./  \
+        --set-customization-variable L2H_FILE=./../t/init/l2h.init  \
+        --error-limit=1000  \
+        --set-customization-variable TEST=1  \
+        --set-customization-variable L2H_CLEAN=0   \
+        --output formatting//out_parser/simplest_test_prefix_info/  \
+        --info  \
+        --set-customization-variable 'PREFIX truc' ./formatting//simplest.texi
+
+Experience has shown that this can be simplified to:
+
+    cd $TEXINFODIR
+    $PERL tp/texi2any.pl --info tp/tests/formatting/simplest.texi
+
+Within the debugger you will be in F<tp/tests/texi2any.pl>.  If you type:
+
+    c 1348
+
+... you will be brought to the method call in which failure occurs.
+
+    main::(../texi2any.pl:1348):      $converter->output($tree);
+
+Type:
+
+    s
+
+You will now be here:
+
+    Texinfo::Convert::Info::output(../../tp/Texinfo/Convert/Info.pm:65)
+
+At this point you can C<s> or C<c> to line 81.
+
+    c 81
+
+    Texinfo::Convert::Info::output(../../tp/Texinfo/Convert/Info.pm:81):
+    81:   my $header = $self->_info_header();
+
+At which point you C<s> again and find your self here:
+
+    s
+
+    Texinfo::Convert::Info::_info_header(../../tp/Texinfo/Convert/Info.pm:304):
+    304:      my $self = shift;
+
+Next:
+
+    c 307
+
+    Texinfo::Convert::Info::_info_header(../../tp/Texinfo/Convert/Info.pm:307):
+    307:      my $paragraph = Texinfo::Convert::Paragraph->new();
+
+    n
+
+    Texinfo::Convert::Info::_info_header(../../tp/Texinfo/Convert/Info.pm:308):
+    308:      my $result = $paragraph->add_text("This is ");
+
+Here, C<s> into add_text():
+
+    s
+
+    c 328
+
+    Texinfo::Convert::ParagraphNonXS::add_text(../../tp/Texinfo/Convert/ParagraphNonXS.pm:328):
+    328:      my @segments = split
+    329:
+    /([^\S\x{202f}\x{00a0}]+)|(\p{InFullwidth})|((?:[^\s\p{InFullwidth}]|[\x{202f}\x{00a0}])+)/,
+    330:        $text;
+
+Invoking the next line should generate the error:
+
+    n
+
+    Modification of a read-only value attempted at
+    ../../tp/Texinfo/Convert/ParagraphNonXS.pm line 328.
+     at ../../tp/Texinfo/Convert/ParagraphNonXS.pm line 328.
+        Texinfo::Convert::ParagraphNonXS::add_text(Texinfo::Convert::ParagraphNonXS=HASH(0x3e5db00),
+    "This is ") called at ../../tp/Texinfo/Convert/Info.pm line 308
+        Texinfo::Convert::Info::_info_header(Texinfo::Convert::Info=HASH(0x3e4ef70))
+    called at ../../tp/Texinfo/Convert/Info.pm line 81
+        Texinfo::Convert::Info::output(Texinfo::Convert::Info=HASH(0x3e4ef70),
+    HASH(0x3e4dd80)) called at ../texi2any.pl line 1348
+    panic: POPSTACK
+    Debugged program terminated.
+
+Alternatively, you can type:
+
+    s
+
+... which should bring you into F<lib/utf8_heavy.pl>.  In that case, the
+B<second> time you come to:
+
+    return $SWASH;
+
+... should be the place where the panic occurs.
+
+=back
+
+=head1 The Challenge
+
+The question is:  What is it about the pattern in the C<split> that (a) as of
+commit C<a5540cf> but not previously; and (b) in the context of this test
+suite but not in isolation, perceives something to be a read-only value not
+subject to modification? 
+
+=cut
+
+
